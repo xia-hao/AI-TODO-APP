@@ -1,0 +1,64 @@
+version: '3.8'
+
+# ============================================================
+# TLS / HTTPS: 生产环境必需通过反向代理(如 Nginx/Caddy)配置
+# HTTPS，使用 Let's Encrypt 或商业证书。当前配置仅适用于
+# 开发环境，所有端口暴露为 HTTP 明文。
+# ============================================================
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: todo-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: todo_app
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    # MySQL port not exposed to host — backend accesses it via internal Docker network only.
+    # To connect from host for debugging, temporarily uncomment: ports: - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+  backend:
+    build: ./backend
+    container_name: todo-backend
+    depends_on:
+      - mysql
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/todo_app?useUnicode=true&characterEncoding=utf8mb4&serverTimezone=Asia/Shanghai
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+      JWT_SECRET: ${JWT_SECRET}
+      JASYPT_ENCRYPTOR_PASSWORD: ${JASYPT_ENCRYPTOR_PASSWORD}
+      AI_SERVICE_URL: http://ai-service:8000
+      AI_INTERNAL_KEY: ${AI_INTERNAL_KEY}
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./frontend
+    container_name: todo-frontend
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+  ai-service:
+    build: ./ai-service
+    container_name: todo-ai-service
+    depends_on:
+      - backend
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-deepseek}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      API_BASE_URL: http://backend:8080/api
+      INTERNAL_API_KEY: ${AI_INTERNAL_KEY}
+    ports:
+      - "8000:8000"
+
+volumes:
+  mysql_data:

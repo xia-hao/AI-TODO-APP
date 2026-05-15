@@ -1,0 +1,19 @@
+# 提交信息格式: <type>: <subject>
+# 空一行后可写详细描述 (可选)
+#
+# Types:
+#   feat:     新功能
+#   fix:      Bug 修复
+#   refactor: 重构（不涉及功能变更或修复）
+#   style:    代码格式（不影响功能）
+#   docs:     文档变更
+#   test:     添加或修改测试
+#   chore:    构建过程或辅助工具的变更
+#   perf:     性能优化
+#   ci:       CI/CD 配置变更
+#
+# 示例:
+#   feat: add user login API
+#   fix: resolve NPE in TodoService
+#   refactor: extract common validation logic
+#   docs: update API documentation

@@ -1,0 +1,71 @@
+# ============================================================
+# TLS / HTTPS: 生产环境应通过反向代理 (Nginx/Caddy) 配置
+# HTTPS 终端，使用有效证书。敏感配置应通过环境变量或 Jasypt
+# 加密值注入，避免明文存储。
+# ============================================================
+
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:mysql://127.0.0.1:3306/todo_app?useUnicode=true&character_set_server=utf8mb4&serverTimezone=Asia/Shanghai}
+    username: ${DB_USER:ENC(ctbUUZYBd9ZULaFAkCq2Ggs/7/f3/rjaFHGxK36lqYxYLGaVA+k0PBGOW+ypESsC)}
+    password: ${DB_PASS:ENC(ctbUUZYBd9ZULaFAkCq2Ggs/7/f3/rjaFHGxK36lqYxYLGaVA+k0PBGOW+ypESsC)}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:your-email@gmail.com}
+    password: ${MAIL_PASSWORD:app-password}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+
+jasypt:
+  encryptor:
+    password: ${JASYPT_ENCRYPTOR_PASSWORD:dev-master-key}
+
+logging:
+  level:
+    root: debug
+  file:
+    name: logs/app.log
+    max-size: 10MB
+    max-history: 3
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    db-config:
+      id-type: auto
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:ENC(nFzQLs7EaydrUJgtg4RDCluGzATPCMbCR/aYbKRcSmWVwGYr1ZLnoyRjc+Dlx7m8B7L0jvdGAhjDb8eDpJL6VaLG27GH0mrGTglytK354cFzH001wZhfB9/O6C91j8hh)}
+    access-token-expiry: 900000
+    refresh-token-expiry: 604800000
+    scoped-token-expiry: 300000
+  cors:
+    allowed-origins: http://127.0.0.1:5173,http://127.0.0.1:80
+  upload:
+    dir: D:\ruoyi\uploadPath\upload
+  ai:
+    service-url: ${AI_SERVICE_URL:http://127.0.0.1:8000}
+    internal-api-key: ${AI_INTERNAL_KEY:ENC(MTrRcf7KuVSYXTpXNzdxhtbcCuFIjcG3dU1HK7ciWNkIeTwJmvfa6xjWBYW1JpDJNkvO7GJHSrX/O8FLKMg7jg==)}
+
+server:
+  port: 8080
+  max-http-request-header-size: 32KB
+  tomcat:
+    connection-timeout: 5000
+    keep-alive-timeout: 20000
+    max-keep-alive-requests: 100
+    accesslog:
+      enabled: false
+      directory: logs
+      prefix: access_log
+      suffix: .log
+      pattern: "%h %l %u %t \"%r\" %s %b %D"

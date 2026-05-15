@@ -1,0 +1,50 @@
+## Python
+__pycache__/
+*.pyc
+
+## Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+*.tmp
+*.releaseBackup
+dependency-reduced-pom.xml
+
+## Node
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+
+## IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+.history/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Env / local config
+.env
+.env.local
+.env.*.local
+application-local.yml
+application-local.properties
+
+## Backend uploads
+backend/uploads/
+
+## Logs
+logs/
+*.log.gz
+
+## Docker
+.dockerignore
