@@ -1366,10 +1366,31 @@ async def _delete_todo_permanent(settings: Settings, **kwargs) -> str:
     if not keyword:
         return "请提供要永久删除的任务关键词。"
 
+    # 先在正常任务中搜索
     todo_id, err = await _search_todo_by_keyword(settings, keyword)
-    if err:
-        return err
+    if not err:
+        data = await _delete(settings, f"/todos/{todo_id}/permanent")
+        return "任务已永久删除！"
 
+    # 正常任务中没找到，再在回收站中搜索
+    data = await _get(settings, "/todos/deleted")
+    todos = data if isinstance(data, list) else []
+    if not todos:
+        return f"未找到匹配的任务：{keyword}"
+
+    keyword_lower = keyword.lower()
+    matched = [t for t in todos if keyword_lower in (t.get("text") or "").lower()]
+
+    if not matched:
+        return f"未找到匹配的任务：{keyword}"
+    if len(matched) > 1:
+        names = "\n".join(
+            "- " + (t.get("text") or "任务" + str(t.get("id", "")))
+            for t in matched[:5]
+        )
+        return f"找到多个匹配的任务，请更精确地指定：\n{names}"
+
+    todo_id = matched[0].get("id")
     data = await _delete(settings, f"/todos/{todo_id}/permanent")
     return "任务已永久删除！"
 

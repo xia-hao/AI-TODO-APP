@@ -1,6 +1,6 @@
-# 待办事项应用
+# Todo App
 
-Vue 3 + Spring Boot + MySQL 全栈团队协作待办应用，以**项目看板**为核心组织工作。
+Vue 3 + Spring Boot + Python AI Service + MySQL 全栈团队协作待办应用，以**项目看板**为核心组织工作。
 
 ## 目录
 
@@ -83,6 +83,13 @@ Vue 3 + Spring Boot + MySQL 全栈团队协作待办应用，以**项目看板**
 ### 快捷操作
 - Ctrl+K 全局唤出快速添加弹窗
 
+### AI 智能助手
+- 内嵌 AI 对话面板，支持会话管理和消息历史
+- 自然语言操作待办（查询、创建、修改、删除）
+- 支持流式输出（SSE）和工具调用（Function Calling）
+- 对接 DeepSeek / OpenAI 等 LLM，可切换 provider
+- 对话通过后端代理转发，支持多轮工具交互
+
 ### 国际化 & 深色模式
 - 中英文切换（vue-i18n）
 - 深色/浅色主题切换（@vueuse/useDark）
@@ -99,6 +106,8 @@ Vue 3 + Spring Boot + MySQL 全栈团队协作待办应用，以**项目看板**
 | Node.js | 20+ |
 | MySQL | 8.0（或 Docker） |
 | Maven | 3.6+ |
+| Python | 3.10+ |
+| LLM API Key | DeepSeek / OpenAI 或其他兼容 provider |
 
 ### 初始化数据库
 
@@ -130,7 +139,18 @@ mvn spring-boot:run
 # 运行在 http://localhost:8080
 ```
 
-**3. 启动前端**
+**3. 启动 AI 服务**（可选，用于 AI 对话功能）
+
+```bash
+cd ai-service
+pip install -r requirements.txt
+python -m app.main
+# 运行在 http://localhost:8000
+```
+
+需设置环境变量：`LLM_API_KEY`、`INTERNAL_API_KEY`（与后端 `app.ai.internal-api-key` 一致）。
+
+**4. 启动前端**
 
 ```bash
 cd frontend
@@ -139,12 +159,14 @@ npm run dev
 # 运行在 http://localhost:5173
 ```
 
-### Docker Compose 一键启动
+### Docker Compose 一键启动（含 AI 服务）
 
 ```bash
 docker-compose up -d
 # 访问 http://localhost
 ```
+
+需先配置 `.env` 文件（参考各服务的 `.env.example`），至少包含数据库密码和 LLM API Key。
 
 ---
 
@@ -248,10 +270,11 @@ docker-compose up -d
 |----|------|
 | 前端 | Vue 3 + TypeScript + Pinia + Element Plus + Axios + ECharts |
 | 后端 | Spring Boot 2.7.18 + MyBatis-Plus + Spring Security 5.7 |
+| AI 服务 | Python + FastAPI + OpenAI SDK（兼容 DeepSeek / 任意 LLM） |
 | 数据库 | MySQL 8.0 |
 | 认证 | JWT（JJWT 0.12） |
 | 实时通信 | STOMP over SockJS（WebSocket） |
-| 构建 | Vite（前端）/ Maven（后端） |
+| 构建 | Vite（前端）/ Maven（后端）/ pip（AI 服务） |
 | 部署 | Docker + Docker Compose + Nginx |
 
 ### 前端架构
@@ -260,7 +283,7 @@ docker-compose up -d
 frontend/src/
 ├── api/                    # Axios 请求模块
 │   ├── http.ts             # 实例、Bearer 注入、401 自动 refresh
-│   ├── auth.ts / todos.ts / teams.ts / projects.ts
+│   ├── ai.ts               # AI 对话 API（会话列表、消息收发、重命名）
 │   ├── sections.ts / subtasks.ts / comments.ts
 │   ├── attachments.ts / tags.ts / notifications.ts / dashboard.ts
 │   ├── recycleBin.ts / activities.ts / calendar.ts
@@ -269,7 +292,8 @@ frontend/src/
 │   ├── todos.ts            # 待办 CRUD / 过滤 / 排序 / 跨分区移动（含导出）
 │   ├── teams.ts            # 团队列表、当前团队
 │   ├── projects.ts         # 项目列表、当前项目
-│   └── notifications.ts    # 通知列表/未读数
+│   ├── notifications.ts    # 通知列表/未读数
+│   └── ai.ts               # AI 对话状态（会话列表、消息记录、流式接收）
 ├── views/
 │   ├── LoginView.vue / RegisterView.vue
 │   ├── DashboardView.vue   # 首页（仪表盘：概览+趋势+项目排名+人员统计+标签热力图）
@@ -285,6 +309,7 @@ frontend/src/
 │   ├── comment/         # CommentList, CommentItem
 │   ├── attachment/      # AttachmentList
 │   ├── tag/             # TagManager
+│   ├── ai/              # AiChatPanel, ChatInput, ChatView, MessageBubble, ConversationList, WelcomeScreen, CodeBlock
 │   ├── notification/    # NotificationPanel
 │   ├── dashboard/       # StatsCards, ProjectRanking, AssigneeStats, TagHeatmap（ECharts）
 │   ├── search/          # SearchBox（全局搜索，Ctrl+K 快捷键）
@@ -304,8 +329,8 @@ frontend/src/
 
 ```
 backend/src/main/java/com/todo/
-├── controller/     # Auth, Todo, Team, Project, Section, Subtask, Tag, Comment, Attachment, Reminder, Notification, Dashboard, ActivityLog, Calendar
-├── service/        # 对应业务逻辑 + 权限校验（含 ActivityLogService 异步日志）
+├── controller/     # Auth, Todo, Team, Project, Section, Subtask, Tag, Comment, Attachment, Reminder, Notification, Dashboard, ActivityLog, Calendar, Ai, AiMessage
+├── service/        # 对应业务逻辑 + 权限校验（含 AiService 调用 AI 服务、ActivityLogService 异步日志）
 ├── mapper/         # MyBatis-Plus Mapper（继承 BaseMapper）
 ├── entity/         # 数据库实体（BaseEntity 含 @TableLogic 软删除）
 ├── scheduler/      # CleanupScheduler（每日 3:00 清理 30 天前回收站待办）
@@ -320,6 +345,43 @@ backend/src/main/java/com/todo/
 - `AppException` 工厂方法生成标准异常，`GlobalExceptionHandler` 统一转为 HTTP 响应
 - `WebSocketConfig` 在握手阶段通过 query param `token` 校验 JWT
 - `ReminderScheduler` 每分钟扫描到期待发送的提醒
+- 后端 `AiService` 作为代理，将前端对话请求转发给 `ai-service`
+
+### AI 服务架构
+
+独立的 Python 微服务，通过 OpenAI 兼容 SDK 对接 LLM（默认 DeepSeek），提供 AI 对话功能。
+
+```
+ai-service/
+├── app/
+│   ├── main.py              # FastAPI 入口 + CORS 配置
+│   ├── config.py            # 环境配置（provider / api_key / model）
+│   ├── middleware.py         # INTERNAL_API_KEY 认证
+│   ├── routes/chat.py       # 会话管理 + 消息流式/非流式响应
+│   ├── session/manager.py   # 会话模型管理（消息构建、token 追踪）
+│   ├── llm/
+│   │   ├── base.py          # LLM 抽象基类
+│   │   └── openai_compat.py # OpenAI SDK 适配器（可切换任意兼容 provider）
+│   └── tools/
+│       ├── registry.py      # 工具注册表（工具发现 + schema 生成）
+│       ├── todo_tools.py    # 待办领域工具集（增删改查 / 项目 / 标签 / 评论）
+│       └── context.py       # 注入参考上下文（项目名等）
+├── Dockerfile
+└── requirements.txt          # FastAPI, httpx, openai, lxml, beautifulsoup4
+```
+
+**对话流程：**
+
+1. 前端 → 后端 `/api/ai/**` → ai-service `/chat/send`（由后端 `AiService` 代理转发）
+2. ai-service 构建消息列表，注入系统提示词和可用工具定义
+3. LLM 流式回复，支持工具调用（查询待办、创建任务等）
+4. 新增消息自动同步回后端数据库
+
+**关键机制：**
+- 支持流式（SSE）和非流式两种回复模式
+- `INTERNAL_API_KEY` 鉴权，防止 ai-service 端口直接暴露
+- 系统提示词动态注入项目上下文，模型可理解看板结构和分区关系
+- 工具调用结果自动注入下一轮对话，实现多轮工具交互
 
 ---
 
@@ -470,6 +532,23 @@ backend/src/main/java/com/todo/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/projects/{projectId}/activities?limit=50` | 项目操作日志时间线 |
+
+### AI 对话 `/api/ai`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/ai/chat` | 发送消息（SSE 流式响应），需 `sessionId` + `conversationId` |
+| POST | `/api/ai/session` | 创建临时会话 ID |
+| GET | `/api/ai/conversations` | 获取会话列表 |
+| POST | `/api/ai/conversations` | 创建新会话 |
+| DELETE | `/api/ai/conversations/{id}` | 删除会话 |
+| PUT | `/api/ai/conversations/{id}/rename` | 重命名会话（请求体 `{"title":"..."}`） |
+| GET | `/api/ai/conversations/{id}/messages` | 获取会话消息历史 |
+| GET | `/api/ai/messages?sessionId=` | 按 sessionId 查询消息 |
+
+**对话流程**：前端 SSE 连接 → 后端 `/api/ai/chat`（代理转发）→ ai-service `/chat` → LLM 流式回复 → SSE 事件推送回前端。
+
+ai-service 内部还提供 `/generate-title` 端点，自动根据首条消息生成对话标题。
 
 ### 其余模块
 
