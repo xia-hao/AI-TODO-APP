@@ -4,20 +4,21 @@ from typing import Any
 
 
 class SessionManager:
-    def __init__(self):
+    """会话管理器 —— 纯内存存储，重启后数据丢失。
+
+    系统提示词由外部注入（来自 config.Settings.system_prompt），
+    保证单点维护，避免多处硬编码不一致。
+    """
+
+    def __init__(self, system_prompt: str = ""):
         self._sessions: dict[str, dict[str, Any]] = {}
+        self._system_prompt = system_prompt
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex
         self._sessions[session_id] = {
             "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个智能任务管理助手，可以帮助用户管理任务、查询统计信息、生成报告等。"
-                        "你可以使用提供的工具来执行操作。请用中文回答用户的问题，回答要简洁明了。"
-                    ),
-                }
+                {"role": "system", "content": self._system_prompt}
             ],
             "created_at": time.time(),
         }
@@ -30,17 +31,16 @@ class SessionManager:
         return session["messages"]
 
     def add_message(self, session_id: str, role: str, content: str, **extra):
+        """追加消息到会话历史。会话不存在时自动创建。
+
+        为什么自动创建：支持无状态模式 —— 请求中可能携带 DB 预加载的消息列表，
+        但系统提示词仍需在会话中初始化。
+        """
         session = self._sessions.get(session_id)
         if session is None:
             session = {
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是一个智能任务管理助手，可以帮助用户管理任务、查询统计信息、生成报告等。"
-                            "你可以使用提供的工具来执行操作。请用中文回答用户的问题，回答要简洁明了。"
-                        ),
-                    }
+                    {"role": "system", "content": self._system_prompt}
                 ],
                 "created_at": time.time(),
             }

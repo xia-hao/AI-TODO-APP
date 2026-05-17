@@ -1,4 +1,26 @@
+"""OpenAI API 兼容的流式 LLM 客户端。
+
+关键设计：XML 工具调用回退
+──────────────────────────────
+部分 OpenAI 兼容提供商（Ollama、部分 DeepSeek 配置）在流模式下不通过
+标准 tool_calls delta 字段返回工具调用，而是将 <tool_calls> XML 嵌入
+到 content 文本中。本模块提供文本缓冲 + 正则检测的回退机制：
+
+1. 流式 chunk 中的 delta.content 先存入 text_buffer，暂不 yield
+2. 当 finish_reason == "stop" 时，检查全文是否匹配 <tool_calls> 模式
+3. 如果是 XML 工具调用 → 丢弃 text_buffer，yield tool_call 事件
+4. 如果不是 → flush text_buffer，yield 正常 text 事件
+
+为什么先缓冲再判断：
+流模式下内容逐块到达，在第一个 content chunk 到达时无法确定整段内容
+是否为 XML 工具调用。必须等流结束后才能做出判断。
+
+为什么在 finally 中兜底 yield done：
+确保即使 LLM 流异常中断，上层 event_generator 也能收到 done 事件退出循环。
+"""
+
 import json
+import logging
 import re
 from typing import Generator
 
@@ -7,8 +29,7 @@ from openai import OpenAI
 from app.config import Settings
 from app.llm.base import LLMClient
 
-# Detect Anthropic/DeepSeek-style XML tool calls emitted as text content
-# by some providers that don't support structured tool_calls in streaming.
+# 检测 Anthropic/DeepSeek 风格 XML 工具调用（嵌入在 content 文本中）
 _XML_TOOL_CALLS_RE = re.compile(
     r'<tool_calls>(.*?)</tool_calls>',
     re.DOTALL,
@@ -22,15 +43,20 @@ _XML_PARAM_RE = re.compile(
     re.DOTALL,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _parse_xml_tool_args(xml_body: str) -> dict:
-    """Parse Anthropic-style XML parameter blocks into a dict."""
+    """解析 XML 参数块为 dict，自动推断类型（数字/布尔/字符串）。"""
     args = {}
     for m in _XML_PARAM_RE.finditer(xml_body):
         name = m.group(1)
-        # Strip string=true/false, number=* type annotations — only keep the text content
         value = m.group(2).strip()
-        args[name] = value
+        # 尝试 JSON 解析以保留数字和布尔类型，失败则保留字符串
+        try:
+            args[name] = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            args[name] = value
     return args
 
 
@@ -81,14 +107,14 @@ class OpenAICompatClient(LLMClient):
                 if getattr(delta, "reasoning_content", None):
                     full_reasoning += delta.reasoning_content
 
-                # Buffer text content — we may need to discard it if it's an XML tool call
+                # 缓冲文本内容 —— 如果是 XML 工具调用则需要丢弃
                 if delta.content:
                     full_content += delta.content
                     text_buffer.append(delta.content)
                     continue
 
                 if delta.tool_calls:
-                    # Standard OpenAI tool call — flush buffer (preamble text), then handle
+                    # 标准 OpenAI 工具调用 —— 先 flush 缓冲的前导文本，再处理工具调用
                     for t in _flush_text():
                         yield t
                     for tc in delta.tool_calls:
@@ -123,27 +149,34 @@ class OpenAICompatClient(LLMClient):
                         }
 
                 if chunk.choices[0].finish_reason == "stop":
-                    # Check if the accumulated content is an XML-style tool call
+                    # 检查累积内容是否为 XML 格式的工具调用
                     xml_tc_match = _XML_TOOL_CALLS_RE.search(full_content)
                     if xml_tc_match:
                         xml_block = xml_tc_match.group(1)
                         invokes = _XML_INVOKE_RE.findall(xml_block)
                         if invokes:
-                            text_buffer = []  # discard XML text — don't show to user
-                            full_content = ""  # don't pass XML to done event
-                            done_yielded = True  # suppress trailing done from finally
-                            for tool_name, xml_body in invokes:
+                            # 保留 XML 块之前的前导文本（如"好的，我来查一下"），只丢弃 XML 块
+                            before_xml = full_content[:xml_tc_match.start()]
+                            if before_xml.strip():
+                                text_buffer = [before_xml]
+                                for t in _flush_text():
+                                    yield t
+                            else:
+                                text_buffer = []
+                            full_content = before_xml if before_xml.strip() else ""
+                            done_yielded = True  # 抑制 finally 中的兜底 done
+                            for idx, (tool_name, xml_body) in enumerate(invokes):
                                 tool_args = _parse_xml_tool_args(xml_body)
                                 yield {
                                     "type": "tool_call",
-                                    "id": "xml-toolcall",
+                                    "id": f"xml-toolcall-{idx}",
                                     "name": tool_name,
                                     "arguments": tool_args,
                                     "reasoning_content": full_reasoning,
                                 }
-                            continue  # skip yielding done — event loop will re-enter
+                            continue
                     else:
-                        # Normal text response — flush buffered text, then done
+                        # 普通文本响应 —— 输出缓冲文本，结束
                         for t in _flush_text():
                             yield t
                         if not done_yielded:
@@ -151,7 +184,6 @@ class OpenAICompatClient(LLMClient):
                             yield {"type": "done", "content": full_content, "reasoning_content": full_reasoning}
 
         except Exception as e:
-            logger = __import__("logging").getLogger(__name__)
             logger.warning("LLM stream interrupted: %s", e)
         finally:
             if not done_yielded:
@@ -161,12 +193,12 @@ class OpenAICompatClient(LLMClient):
         result = []
         for tool in tools:
             if isinstance(tool, dict):
-                # Tool def may already include "type": "function" wrapper
+                # 工具定义可能已包含 "type": "function" 外层包装
                 if "type" in tool and "function" in tool:
                     result.append(tool)
                 else:
                     result.append({"type": "function", "function": tool})
             else:
-                # Assume it's an object with a get_tool_def() method
+                # 假设是有 get_tool_def() 方法的对象
                 result.append(tool.get_tool_def())
         return result

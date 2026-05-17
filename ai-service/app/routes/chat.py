@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Any
+from dataclasses import dataclass
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# 最大工具调用轮次 —— 防止 LLM 在工具循环中无限迭代耗尽 token
 _MAX_TOOL_ITERATIONS = 5
 
+# 工具执行时的用户可见提示，避免长时间无反馈
 _TOOL_HINTS = {
     "create_todo": "正在创建待办...",
     "update_todo": "正在更新待办...",
@@ -44,7 +46,21 @@ _TOOL_HINTS = {
     "move_todo_section": "正在移动任务分区...",
 }
 
-_deps: dict[str, Any] = {}
+
+# ============================================================
+# 依赖注入 —— 启动时 setup_deps() 初始化，所有请求复用
+# ============================================================
+
+@dataclass
+class AppDeps:
+    """应用级依赖容器。每次启动时通过 setup_deps() 填充。"""
+    settings: Settings | None = None
+    llm_client: OpenAICompatClient | None = None
+    session_mgr: SessionManager | None = None
+    tool_registry: ToolRegistry | None = None
+
+
+_deps: AppDeps = AppDeps()
 
 
 class ChatRequest(BaseModel):
@@ -54,42 +70,54 @@ class ChatRequest(BaseModel):
     llm_provider: str | None = None
     username: str = ""
     display_name: str = ""
-    messages: list[dict] | None = None  # optional pre-loaded history (from DB)
+    messages: list[dict] | None = None  # 从 DB 预加载的历史消息（无状态模式）
 
 
 class GenerateTitleRequest(BaseModel):
     message: str
 
 
-def setup_deps(settings: Settings) -> dict:
-    _deps["settings"] = settings
-    _deps["llm_client"] = OpenAICompatClient(settings)
-    _deps["session_mgr"] = SessionManager()
-    _deps["tool_registry"] = ToolRegistry()
+def setup_deps(settings: Settings, tool_registry: ToolRegistry | None = None) -> AppDeps:
+    """初始化并注入所有依赖。在 app 启动时由 main.py 调用一次。"""
+    _deps.settings = settings
+    _deps.llm_client = OpenAICompatClient(settings)
+    _deps.session_mgr = SessionManager(system_prompt=settings.system_prompt)
+    _deps.tool_registry = tool_registry or ToolRegistry()
     return _deps
 
 
 def _s() -> Settings:
-    return _deps["settings"]
+    assert _deps.settings is not None, "Settings 未初始化"
+    return _deps.settings
 
 
 def _llm() -> OpenAICompatClient:
-    return _deps["llm_client"]
+    assert _deps.llm_client is not None, "LLMClient 未初始化"
+    return _deps.llm_client
 
 
 def _mgr() -> SessionManager:
-    return _deps["session_mgr"]
+    assert _deps.session_mgr is not None, "SessionManager 未初始化"
+    return _deps.session_mgr
 
 
 def _tools() -> ToolRegistry:
-    return _deps["tool_registry"]
+    assert _deps.tool_registry is not None, "ToolRegistry 未初始化"
+    return _deps.tool_registry
 
 
 @router.post("/chat")
 async def chat(request: ChatRequest):
-    if request.token:
-        scope_token.set(request.token)
+    """核心对话端点 — SSE 流式返回，支持 Tool Loop (ReAct 模式)。
 
+    关键设计点：
+    1. scope_token 仅在 event_generator 内设置 —— 因为 StreamingResponse
+       会创建新的 asyncio task，ContextVar 不跨 task 传递，chat() 中设置无效。
+    2. 支持两种历史模式：
+       - 有状态：使用内存 SessionManager 的历史
+       - 无状态：请求携带 DB 预加载的 messages，需要剥离旧的 tool_call/tool 消息
+         （这些消息引用了上一轮对话的工具调用，会混淆 LLM）
+    """
     settings = _s()
     session_mgr = _mgr()
     llm_client = _llm()
@@ -97,7 +125,7 @@ async def chat(request: ChatRequest):
 
     session_id = request.session_id or session_mgr.create_session()
 
-    # Build the user identity suffix for system prompt
+    # 构建用户身份信息注入到系统提示词
     user_info = ""
     if request.username:
         user_info = (
@@ -105,9 +133,7 @@ async def chat(request: ChatRequest):
             f"在回答中可以直接称呼用户的名字。"
         )
 
-    # If messages provided from DB, use them as the base context (stateless).
-    # DB history already includes the current user message, so no append needed.
-    # Strip out stale tool_call/tool messages that would confuse the LLM.
+    # 无状态模式：使用 DB 历史。剥离 tool/tool_calls 消息避免 LLM 混淆
     if request.messages:
         raw_messages = list(request.messages)
         messages = [
@@ -115,20 +141,21 @@ async def chat(request: ChatRequest):
             if m["role"] != "tool"
             and not (m["role"] == "assistant" and "tool_calls" in m)
         ]
-        if not messages or messages[0].get("role") != "system":
-            messages.insert(0, {"role": "system", "content": settings.system_prompt + user_info})
-        elif user_info and user_info not in messages[0].get("content", ""):
-            messages[0]["content"] += user_info
+        # 用最新系统提示词确保工具能力描述不丢失（DB 不存 system 消息时插入，有旧版时替换）
+        if messages and messages[0].get("role") == "system":
+            messages[0]["content"] = settings.system_prompt + user_info  # 替换旧提示词
+        else:
+            messages.insert(0, {"role": "system", "content": settings.system_prompt + user_info})  # 插入新提示词
     else:
+        # 有状态模式：追加用户消息到内存会话
         session_mgr.add_message(session_id, "user", request.message)
-        # Inject user info into session's system prompt if needed
         if user_info:
             history = session_mgr.get_history(session_id)
             if history and history[0].get("role") == "system" and user_info not in history[0].get("content", ""):
                 history[0]["content"] += user_info
         messages = list(session_mgr.get_history(session_id))
 
-    # Trim: keep system prompt + last N turns to avoid context overflow
+    # 裁剪历史：保留系统提示词 + 最近 N 轮对话，防止上下文溢出
     _MAX_HISTORY_TURNS = 10
     if len(messages) > 1:
         sys_msg = messages[0] if messages[0].get("role") == "system" else None
@@ -138,9 +165,15 @@ async def chat(request: ChatRequest):
             messages = [sys_msg] + rest if sys_msg else rest
 
     async def event_generator():
-        # Re-set scope_token here because event_generator runs in a different
-        # asyncio task (driven by StreamingResponse) where the contextvar
-        # set in chat() is not visible.
+        """SSE 事件生成器 —— 实现 Tool Loop (ReAct)。
+
+        流程：LLM 流式输出 → 收集工具调用 → 执行工具 → 结果喂回 LLM → 循环
+        最多 MAX_TOOL_ITERATIONS 轮。如果 LLM 调用了工具但最终无文本输出，
+        会强制追加一条总结请求（DeepSeek 某些版本会只返回 tool_calls 无摘要）。
+
+        为什么 scope_token 在这里重新设置：
+        StreamingResponse 会启动新的 asyncio.Task，ContextVar 上下文不继承。
+        """
         if request.token:
             scope_token.set(request.token)
         full_response = ""
@@ -162,9 +195,11 @@ async def chat(request: ChatRequest):
                     if ctype == "text":
                         content = chunk.get("content", "")
                         iteration_text += content
+                        # SST 第一层：LLM 的文本直接发给客户端
                         yield f"event: message\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
                     elif ctype == "tool_call":
+                        # 工具调用不暴露给客户端，只收集到 batch 等待执行
                         has_tool_call = True
                         tool_calls_batch.append(chunk)
 
@@ -178,7 +213,7 @@ async def chat(request: ChatRequest):
                         if not has_tool_call:
                             full_response = iteration_text
 
-                # Process collected tool calls after the stream ends
+                # 流结束后，批量处理收集到的工具调用
                 if has_tool_call:
                     tool_was_called = True
                     tool_calls_msg: list[dict] = []
@@ -190,9 +225,11 @@ async def chat(request: ChatRequest):
                         if tc_reasoning:
                             iteration_reasoning = tc_reasoning
 
+                        # SST 第二层：只发送模糊提示，不暴露工具名称和参数
                         hint = _TOOL_HINTS.get(tool_name, "处理中...")
                         yield f"event: message\ndata: {json.dumps({'type': 'thinking', 'hint': hint}, ensure_ascii=False)}\n\n"
 
+                        # 执行工具 —— 获取的真实数据只进 LLM 上下文，不 yield 给客户端
                         try:
                             result = await tool_registry.execute(tool_name, tool_args)
                         except asyncio.CancelledError:
@@ -210,12 +247,16 @@ async def chat(request: ChatRequest):
                                 "arguments": json.dumps(tool_args, ensure_ascii=False),
                             },
                         })
+                        # SST 第三层：工具结果只进入 LLM 上下文，不返回客户端
+                        # 客户端最终看到的是 LLM 消化后的总结，而非原始后端数据
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_id,
                             "content": result,
                         })
 
+                    # assistant(tool_calls) 必须排在 tool 结果消息之前：
+                    # OpenAI API 要求两条消息成对出现且顺序固定
                     assistant_msg = {
                         "role": "assistant",
                         "content": iteration_text or None,
@@ -236,8 +277,8 @@ async def chat(request: ChatRequest):
             if not full_response:
                 full_response = f"处理请求时出现异常：{e}"
 
-        # If the LLM made tool calls but returned empty text in the final
-        # iteration (no summary after tool results), force a summarization call.
+        # 工具已执行但 LLM 没有返回总结文本时，强制请求总结
+        # 常见于 DeepSeek 等提供商在流模式下只输出 tool_calls 无文本
         if not full_response and tool_was_called:
             messages.append({"role": "user", "content": "请根据以上所有信息，用中文给出完整的回答。"})
             for chunk in llm_client.chat_stream(messages, []):
@@ -248,6 +289,7 @@ async def chat(request: ChatRequest):
                 elif ctype == "done":
                     break
             full_response = full_response.strip()
+            messages.pop()  # 用完即删，临时提示词不污染对话历史
 
         if full_response:
             extra = {}
@@ -258,6 +300,8 @@ async def chat(request: ChatRequest):
             except Exception:
                 pass
 
+        # SST 第四层：最终响应是 LLM 消化工具结果后的总结，
+        # 不包含任何原始后端数据
         yield f"event: done\ndata: {json.dumps({'type': 'done', 'content': full_response}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
