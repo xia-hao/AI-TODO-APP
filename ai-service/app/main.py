@@ -16,6 +16,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import create_settings
+from app.knowledge import ChromaKnowledgeStore
+
+# 知识库备选后端（按需取消注释）：
+# from app.knowledge import ChromaKnowledgeStore, QdrantKnowledgeStore, APIEmbedding
 from app.middleware import verify_api_key
 from app.routes import chat as chat_router
 from app.tools import load_tool_packages
@@ -77,8 +81,17 @@ async def startup():
         settings.system_prompt = settings.system_prompt.rstrip() + "\n\n" + tool_prompt_suffix
         logger.info("Merged tool prompt suffixes (%d chars)", len(tool_prompt_suffix))
 
-    # 3.4 初始化 LLM 客户端、会话管理器（此时 system_prompt 已合并）
-    deps = chat_router.setup_deps(settings, tool_registry)
+    # 3.4 初始化知识库（经验自动积累）
+    # 可选后端（统一 KnowledgeStore 接口，换后端只需改这 1 行）：
+    #   ChromaKnowledgeStore("./chroma_data")                                     # 语义搜索（推荐）
+    #   QdrantKnowledgeStore("./qdrant_data")                                     # 语义搜索，本地模型
+    #   QdrantKnowledgeStore("./qdrant_data", embedder=APIEmbedding(              # 语义搜索，DeepSeek API
+    #       api_key=settings.llm_api_key, base_url=settings.llm_base_url))
+    #   JsonKnowledgeStore("experiences.json")                                    # 关键词匹配，零依赖
+    knowledge_store = ChromaKnowledgeStore("./chroma_data")
+
+    # 3.5 初始化 LLM 客户端、会话管理器
+    deps = chat_router.setup_deps(settings, tool_registry, knowledge_store)
 
     logger.info(
         "AI Service started — provider=%s model=%s tools=%d packages=%s internal_key=%s",

@@ -1,14 +1,20 @@
+"""会话管理器 —— 纯内存存储。
+
+ai-service 是无状态的，对话历史由 Java 后端持久化。
+前端通过请求中的 messages 字段传入历史，见 chat.py 的无状态模式。
+SessionManager 只在单次会话生命周期内缓存消息，重启即失。
+
+系统提示词由外部注入（来自 config.Settings.system_prompt），
+保证单点维护，避免多处硬编码不一致。
+"""
+
 import time
 import uuid
 from typing import Any
 
 
 class SessionManager:
-    """会话管理器 —— 纯内存存储，重启后数据丢失。
-
-    系统提示词由外部注入（来自 config.Settings.system_prompt），
-    保证单点维护，避免多处硬编码不一致。
-    """
+    """会话管理器 —— 纯内存存储，重启后数据丢失。"""
 
     def __init__(self, system_prompt: str = ""):
         self._sessions: dict[str, dict[str, Any]] = {}
@@ -31,11 +37,7 @@ class SessionManager:
         return session["messages"]
 
     def add_message(self, session_id: str, role: str, content: str, **extra):
-        """追加消息到会话历史。会话不存在时自动创建。
-
-        为什么自动创建：支持无状态模式 —— 请求中可能携带 DB 预加载的消息列表，
-        但系统提示词仍需在会话中初始化。
-        """
+        """追加消息到会话历史。会话不存在时自动创建。"""
         session = self._sessions.get(session_id)
         if session is None:
             session = {

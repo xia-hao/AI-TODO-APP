@@ -5,3 +5,7 @@ httpx>=0.25.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
+
+# 向量知识库（至少选一个）
+chromadb>=1.5.0
+qdrant-client>=1.18.0

@@ -38,7 +38,7 @@ async def _request(method: str, path: str, json_data: dict = None, params: dict 
     Java 后端在错误响应中通过 JSON body 返回业务错误消息，
     先提取 body 再检查状态码可以拿到具体的 msg 而非仅 "500 Internal Server Error"。
     """
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.request(
             method, f"{_base()}{path}",
             json=json_data, params=params,
