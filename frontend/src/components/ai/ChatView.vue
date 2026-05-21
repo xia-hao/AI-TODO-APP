@@ -21,8 +21,12 @@
           :loading="isLastAssistantMessage(index) && loading"
           :thinking-hint="isLastAssistantMessage(index) ? thinkingHint : ''"
           :error="isLastAssistantMessage(index) && !!error"
+          :always-show-actions="isLastAssistantMessage(index)"
+          :show-confirm="isLastAssistantMessage(index) && !!pendingConfirm"
           @retry="onRetry"
           @regenerate="onRegenerate"
+          @approve="$emit('approve')"
+          @reject="$emit('reject')"
         />
       </template>
     </div>
@@ -53,6 +57,7 @@ const props = defineProps<{
   error: string
   thinkingHint: string
   draftText: string
+  pendingConfirm: { confirmId: string; tool: string; hint: string; args?: Record<string, any> } | null
 }>()
 
 const emit = defineEmits<{
@@ -61,6 +66,8 @@ const emit = defineEmits<{
   regenerate: []
   retry: []
   'update:draftText': [value: string]
+  approve: []
+  reject: []
 }>()
 
 const messagesRef = ref<HTMLElement | null>(null)
@@ -72,7 +79,6 @@ function asRole(r: string): 'user' | 'assistant' {
 function isLastAssistantMessage(index: number): boolean {
   const msg = props.messages[index]
   if (!msg || msg.role !== 'assistant') return false
-  // Check no later assistant messages exist
   for (let i = index + 1; i < props.messages.length; i++) {
     if (props.messages[i].role === 'assistant') return false
   }
@@ -111,9 +117,9 @@ function scrollToBottom() {
   })
 }
 
-// Auto-scroll when messages change or loading state changes
 watch(() => props.messages.length, () => scrollToBottom())
 watch(() => props.loading, () => scrollToBottom())
+watch(() => props.pendingConfirm, () => scrollToBottom())
 </script>
 
 <style scoped>
@@ -168,4 +174,5 @@ watch(() => props.loading, () => scrollToBottom())
   padding: 12px 16px;
   border-top: 1px solid var(--el-border-color-light);
 }
+
 </style>

@@ -19,10 +19,13 @@
       :error="error"
       :thinking-hint="aiStore.thinkingHint"
       :draft-text="draftText"
+      :pending-confirm="aiStore.pendingConfirm"
       @send="handleSend"
       @stop="handleStop"
       @regenerate="handleRegenerate"
       @retry="handleRetry"
+      @approve="handleApprove"
+      @reject="handleReject"
       @update:draft-text="handleDraftChange"
     />
   </div>
@@ -36,8 +39,9 @@ import ConversationSidebar from './ConversationList.vue'
 import ChatView from './ChatView.vue'
 
 const aiStore = useAiStore()
-const { conversations, currentId, messages, loading, conversationsLoading, messagesLoading, error } = storeToRefs(aiStore)
+const { conversations, currentId, messages, loading, conversationsLoading, messagesLoading, error, pendingConfirm } = storeToRefs(aiStore)
 const draftText = ref('')
+const sendingConfirm = ref(false)
 
 onMounted(() => {
   if (conversations.value.length === 0) {
@@ -45,7 +49,6 @@ onMounted(() => {
   }
 })
 
-// Save/restore drafts when switching conversations
 watch(currentId, (newId, oldId) => {
   if (oldId != null && draftText.value) {
     aiStore.saveDraft(draftText.value)
@@ -68,6 +71,18 @@ function handleRegenerate() {
 
 function handleRetry() {
   aiStore.regenerate()
+}
+
+async function handleApprove() {
+  sendingConfirm.value = true
+  await aiStore.approveConfirm()
+  sendingConfirm.value = false
+}
+
+async function handleReject() {
+  sendingConfirm.value = true
+  await aiStore.rejectConfirm()
+  sendingConfirm.value = false
 }
 
 function handleDraftChange(val: string) {

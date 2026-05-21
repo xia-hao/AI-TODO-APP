@@ -38,6 +38,10 @@ export function getConversationMessages(id: number) {
   return http.get<{ success: boolean; data: any[] }>(`/ai/conversations/${id}/messages`)
 }
 
+export function confirmAction(confirmId: string, approved: boolean) {
+  return http.post('/ai/chat/confirm-action', { confirmId, approved })
+}
+
 export function chatStream(request: AiChatRequest, externalSignal?: AbortSignal): StreamController {
   const internalController = externalSignal ? null : new AbortController()
   const signal = externalSignal || internalController!.signal

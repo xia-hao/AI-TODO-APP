@@ -2,11 +2,14 @@ package com.todo.service;
 
 import com.todo.config.AiConfig;
 import com.todo.dto.request.AiChatRequest;
+import com.todo.dto.request.ConfirmActionRequest;
+import com.todo.dto.response.ApiResponse;
 import com.todo.entity.AiConversation;
 import com.todo.entity.AiMessage;
 import com.todo.entity.User;
 import com.todo.security.JwtTokenProvider;
 import com.todo.service.AiConversationService;
+import com.todo.util.HttpClientUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -14,7 +17,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -28,6 +30,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 @RequiredArgsConstructor
@@ -55,20 +58,22 @@ public class AiService {
         aiMessageService.saveMessage(user.getId(), sessionId, "user", message);
 
         final Long convId = request.getConversationId();
+        final AtomicReference<HttpURLConnection> connRef = new AtomicReference<>();
+
+        // 客户端断开/完成/超时时，立即切断 ai-service 的连接，让 SSE 流快速停止
+        emitter.onCompletion(() -> {
+            HttpURLConnection c = connRef.getAndSet(null);
+            if (c != null) c.disconnect();
+        });
+        emitter.onTimeout(() -> {
+            HttpURLConnection c = connRef.getAndSet(null);
+            if (c != null) c.disconnect();
+        });
 
         executor.execute(() -> {
             HttpURLConnection conn = null;
             StringBuilder assistantContent = new StringBuilder();
             try {
-                URL url = new URL(aiConfig.getServiceUrl() + "/api/chat");
-                conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("X-Api-Key", aiConfig.getInternalApiKey() != null ? aiConfig.getInternalApiKey() : "");
-                conn.setDoOutput(true);
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(120000);
-
                 Map<String, Object> body = new HashMap<>();
                 body.put("session_id", sessionId);
                 body.put("message", message);
@@ -76,9 +81,9 @@ public class AiService {
                 body.put("username", user.getUsername());
                 body.put("display_name", user.getDisplayName() != null ? user.getDisplayName() : user.getUsername());
 
-                // Load conversation history from DB and pass as context (survives ai-service restart)
+                // 从数据库加载对话历史记录并作为上下文传递（在ai服务重启后仍然有效）
                 List<AiMessage> history = aiMessageService.getMessages(sessionId);
-                // Keep only the last 10 turns (user+assistant pairs) to avoid context overflow
+                // 只保留最后10个回合（用户+助手对），以避免上下文溢出
                 int maxMessages = 20;
                 if (history.size() > maxMessages) {
                     history = history.subList(history.size() - maxMessages, history.size());
@@ -92,14 +97,17 @@ public class AiService {
                 }
                 body.put("messages", messagesList);
 
-                try (OutputStream os = conn.getOutputStream()) {
-                    os.write(objectMapper.writeValueAsBytes(body));
-                    os.flush();
+                String aiUrl = aiConfig.getServiceUrl() + "/api/chat";
+                Map<String, String> chatHeaders = new HashMap<>();
+                if (aiConfig.getInternalApiKey() != null) {
+                    chatHeaders.put("X-Api-Key", aiConfig.getInternalApiKey());
                 }
+                conn = HttpClientUtils.openConnection("POST", aiUrl, chatHeaders, body, 10000, 120000);
+                connRef.set(conn);
 
                 int status = conn.getResponseCode();
                 if (status != 200) {
-                    String errorBody = readStream(conn.getErrorStream());
+                    String errorBody = HttpClientUtils.readStream(conn.getErrorStream());
                     sendError(emitter, assistantContent, "AI 服务错误 (" + status + "): " + errorBody);
                     return;
                 }
@@ -158,6 +166,7 @@ public class AiService {
                 log.error("AI chat stream error", e);
                 sendError(emitter, assistantContent, "请求处理失败: " + e.getMessage());
             } finally {
+                connRef.set(null);
                 if (conn != null) conn.disconnect();
             }
         });
@@ -186,46 +195,37 @@ public class AiService {
 
     private String generateTitle(String message) {
         try {
-            URL url = new URL(aiConfig.getServiceUrl() + "/api/generate-title");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setRequestProperty("X-Api-Key", aiConfig.getInternalApiKey() != null ? aiConfig.getInternalApiKey() : "");
-            conn.setDoOutput(true);
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(10000);
-
+            String url = aiConfig.getServiceUrl() + "/api/generate-title";
             Map<String, String> body = new HashMap<>();
             body.put("message", message);
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(objectMapper.writeValueAsBytes(body));
-                os.flush();
+            Map<String, String> headers = new HashMap<>();
+            if (aiConfig.getInternalApiKey() != null) {
+                headers.put("X-Api-Key", aiConfig.getInternalApiKey());
             }
-
-            int status = conn.getResponseCode();
-            if (status == 200) {
-                Map<String, Object> resp = objectMapper.readValue(conn.getInputStream(), Map.class);
-                Object title = resp.get("title");
-                return title != null ? title.toString() : null;
-            }
+            Map<String, Object> resp = HttpClientUtils.postJson(url, headers, body);
+            Object title = resp.get("title");
+            return title != null ? title.toString() : "新对话";
         } catch (Exception e) {
             log.warn("Title generation failed", e);
+            return null;
         }
-        return null;
     }
 
-    private String readStream(java.io.InputStream stream) {
-        try {
-            if (stream == null) return "";
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            byte[] data = new byte[4096];
-            int n;
-            while ((n = stream.read(data, 0, data.length)) != -1) {
-                buffer.write(data, 0, n);
-            }
-            return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            return "";
+    public ApiResponse<Map<String, Object>> confirmAction(ConfirmActionRequest request, User user) {
+        String url = aiConfig.getServiceUrl() + "/api/chat/confirm-action";
+        Map<String, String> headers = new HashMap<>();
+        if (aiConfig.getInternalApiKey() != null) {
+            headers.put("X-Api-Key", aiConfig.getInternalApiKey());
         }
+        Map<String, Object> body = new HashMap<>();
+        body.put("confirm_id", request.getConfirmId());
+        body.put("approved", request.isApproved());
+        // 传入新 token，ai-service 会在后续工具调用中使用，防止长时间对话 token 过期
+        body.put("token", jwtTokenProvider.generateScopedToken(user.getId(), user.getUsername()));
+        Map<String, Object> resp = HttpClientUtils.postJson(url, headers, body);
+        if (resp.containsKey("error")) {
+            return ApiResponse.ok(null, "确认操作失败");
+        }
+        return ApiResponse.ok(resp);
     }
 }

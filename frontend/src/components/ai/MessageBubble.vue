@@ -23,13 +23,22 @@
         <div class="bubble">
           <div class="markdown-body" v-html="renderedContent" />
         </div>
-        <div class="message-actions">
-          <el-tooltip content="复制" placement="top">
-            <el-button text size="small" class="action-btn" @click="handleCopy">{{ copied ? '已复制' : '📋' }}</el-button>
+        <div class="message-actions" :class="{ 'always-visible': alwaysShowActions || showConfirm }">
+          <el-tooltip :content="copied ? '已复制' : '复制'" placement="top">
+            <el-button text size="small" class="action-btn" @click="handleCopy">
+              <el-icon :size="15"><DocumentCopy /></el-icon>
+            </el-button>
           </el-tooltip>
-          <el-tooltip content="重新生成" placement="top">
-            <el-button text size="small" class="action-btn" @click="$emit('regenerate')">🔄</el-button>
+          <el-tooltip v-if="role === 'assistant'" content="重新生成" placement="top">
+            <el-button text size="small" class="action-btn" @click="$emit('regenerate')">
+              <el-icon :size="15"><Refresh /></el-icon>
+            </el-button>
           </el-tooltip>
+          <span v-if="showConfirm" class="action-separator" />
+          <template v-if="showConfirm">
+            <el-button size="small" @click="$emit('reject')">拒绝</el-button>
+            <el-button size="small" type="primary" @click="$emit('approve')">确认执行</el-button>
+          </template>
         </div>
       </template>
     </div>
@@ -41,9 +50,10 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { useAuthStore } from '@/stores/auth'
+import { DocumentCopy, Refresh } from '@element-plus/icons-vue'
 
-const props = defineProps<{ role: 'user' | 'assistant'; content: string; loading?: boolean; thinkingHint?: string; error?: boolean }>()
-defineEmits<{ retry: []; regenerate: [] }>()
+const props = defineProps<{ role: 'user' | 'assistant'; content: string; loading?: boolean; thinkingHint?: string; error?: boolean; showConfirm?: boolean; alwaysShowActions?: boolean }>()
+defineEmits<{ retry: []; regenerate: []; approve: []; reject: [] }>()
 const auth = useAuthStore()
 const userName = computed(() => auth.user?.displayName?.charAt(0) || '我')
 const copied = ref(false)
@@ -146,8 +156,11 @@ async function handleCopy() {
 .thinking-badge::before { content: ''; width: 6px; height: 6px; background: var(--el-color-primary); border-radius: 50%; animation: thinking-pulse 1s ease-in-out infinite; }
 
 /** Message actions */
-.message-actions { display: flex; gap: 2px; margin-top: 4px; opacity: 0; transition: opacity 0.15s; padding-left: 4px; }
-.message-row.assistant .message-content:hover .message-actions { opacity: 1; }
+.message-actions { display: flex; align-items: center; gap: 4px; margin-top: 4px; padding-left: 4px; flex-wrap: wrap; }
+.message-row.assistant .message-actions:not(.always-visible) { opacity: 0; transition: opacity 0.15s; }
+.message-row.assistant .message-content:hover .message-actions:not(.always-visible) { opacity: 1; }
+.message-actions.always-visible { opacity: 1; }
+.action-separator { width: 1px; height: 16px; background: var(--el-border-color); margin: 0 4px; }
 .action-btn { font-size: 14px; height: 28px; padding: 0 6px; color: var(--el-text-color-secondary); }
 .action-btn.active { color: var(--el-color-primary); }
 

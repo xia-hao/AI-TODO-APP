@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import {
   chatStream, listConversations,
   createConversation, deleteConversation, renameConversation,
-  getConversationMessages
+  getConversationMessages, confirmAction as confirmActionApi
 } from '@/api/ai'
 import type { Conversation } from '@/api/ai'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -12,6 +12,13 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   id: string
+}
+
+export interface ConfirmRequest {
+  confirmId: string
+  tool: string
+  hint: string
+  args?: Record<string, any>  // 工具参数，前端展示具体操作内容
 }
 
 export const useAiStore = defineStore('ai', () => {
@@ -24,6 +31,7 @@ export const useAiStore = defineStore('ai', () => {
   const error = ref('')
   const showPanel = ref(false)
   const thinkingHint = ref('')
+  const pendingConfirm = ref<ConfirmRequest | null>(null)
   const abortController = ref<AbortController | null>(null)
   const draftMessages = ref<Record<number, string>>({})
 
@@ -153,6 +161,13 @@ export const useAiStore = defineStore('ai', () => {
             assistantMsg.content += data.content || ''
           } else if (data.type === 'thinking') {
             thinkingHint.value = data.hint || '处理中...'
+          } else if (data.type === 'confirm') {
+            pendingConfirm.value = {
+              confirmId: data.confirm_id || '',
+              tool: data.tool || '',
+              hint: data.hint || '',
+              args: data.args || {},
+            }
           }
         },
         () => {
@@ -231,6 +246,18 @@ export const useAiStore = defineStore('ai', () => {
     }
   }
 
+  async function approveConfirm() {
+    if (!pendingConfirm.value) return
+    await confirmActionApi(pendingConfirm.value.confirmId, true)
+    pendingConfirm.value = null
+  }
+
+  async function rejectConfirm() {
+    if (!pendingConfirm.value) return
+    await confirmActionApi(pendingConfirm.value.confirmId, false)
+    pendingConfirm.value = null
+  }
+
   function togglePanel() {
     showPanel.value = !showPanel.value
     if (showPanel.value && conversations.value.length === 0) {
@@ -240,11 +267,13 @@ export const useAiStore = defineStore('ai', () => {
 
   return {
     conversations, currentId, messages, loading, error, showPanel, thinkingHint,
+    pendingConfirm,
     conversationsLoading, messagesLoading, abortController, draftMessages,
     currentConversation,
     fetchConversations, selectConversation, newConversation,
     removeConversation, renameConversationAction, sendMessage,
     stopGeneration, regenerate, saveDraft, getDraft, clearDraft,
+    approveConfirm, rejectConfirm,
     togglePanel,
   }
 })

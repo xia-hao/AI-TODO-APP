@@ -1,6 +1,7 @@
 package com.todo.controller;
 
 import com.todo.dto.request.AiChatRequest;
+import com.todo.dto.request.ConfirmActionRequest;
 import com.todo.dto.request.RenameConversationRequest;
 import com.todo.dto.response.ApiResponse;
 import com.todo.entity.User;
@@ -16,10 +17,8 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/ai")
@@ -37,10 +36,11 @@ public class AiController {
         return aiService.chatStream(request, user);
     }
 
-    @PostMapping("/session")
-    public ApiResponse<Map<String, String>> createSession() {
-        String sessionId = UUID.randomUUID().toString().replace("-", "");
-        return ApiResponse.ok(Collections.singletonMap("sessionId", sessionId));
+    @PostMapping("/chat/confirm-action")
+    public ApiResponse<Map<String, Object>> confirmAction(@AuthenticationPrincipal User user,
+                                                           @Valid @RequestBody ConfirmActionRequest request) {
+        log.info("User {} confirm action: {} approved={}", user.getId(), request.getConfirmId(), request.isApproved());
+        return aiService.confirmAction(request, user);
     }
 
     @GetMapping("/conversations")
